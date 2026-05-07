@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "observability": {
+      "command": "/Users/cguo/code/empty/mcp_server/.venv/bin/python",
+      "args": ["-m", "obs_mcp"],
+      "cwd": "/Users/cguo/code/empty/mcp_server"
+    }
+  }
+}

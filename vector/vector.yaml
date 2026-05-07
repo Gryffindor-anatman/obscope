@@ -1,0 +1,74 @@
+api:
+  enabled: true
+  address: 0.0.0.0:8686
+
+sources:
+  # OTLP receiver — accepts traces, logs, and metrics on the same port.
+  # use_otlp_decoding=true keeps the signal in raw OTLP form so the
+  # downstream `opentelemetry` sink can re-encode and forward without us
+  # hand-crafting payloads in VRL. We pass through all three signals
+  # straight to the Victoria* OTLP ingestion endpoints.
+  otlp:
+    type: opentelemetry
+    grpc:
+      address: 0.0.0.0:4317
+    http:
+      address: 0.0.0.0:4318
+    use_otlp_decoding:
+      logs: true
+      metrics: true
+      traces: true
+
+sinks:
+  # Logs → VictoriaLogs (OTLP HTTP/protobuf). _stream_fields keeps the
+  # stream key small so per-stream indexing stays cheap; everything else
+  # is searchable as a regular field.
+  victorialogs:
+    type: opentelemetry
+    inputs:
+      - otlp.logs
+    protocol:
+      type: http
+      uri: http://victoria-logs:9428/insert/opentelemetry/v1/logs?_stream_fields=service.name,severity_text,scope.name
+      method: post
+      encoding:
+        codec: otlp
+      framing:
+        method: bytes
+      request:
+        headers:
+          content-type: application/x-protobuf
+
+  # Metrics → VictoriaMetrics (OTLP HTTP/protobuf, push from app SDK).
+  victoriametrics:
+    type: opentelemetry
+    inputs:
+      - otlp.metrics
+    protocol:
+      type: http
+      uri: http://victoria-metrics:8428/opentelemetry/v1/metrics
+      method: post
+      encoding:
+        codec: otlp
+      framing:
+        method: bytes
+      request:
+        headers:
+          content-type: application/x-protobuf
+
+  # Traces → VictoriaTraces (OTLP HTTP/protobuf passthrough).
+  victoriatraces:
+    type: opentelemetry
+    inputs:
+      - otlp.traces
+    protocol:
+      type: http
+      uri: http://victoria-traces:10428/insert/opentelemetry/v1/traces
+      method: post
+      encoding:
+        codec: otlp
+      framing:
+        method: bytes
+      request:
+        headers:
+          content-type: application/x-protobuf

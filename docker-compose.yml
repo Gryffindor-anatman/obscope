@@ -1,0 +1,110 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: demo-app
+    ports:
+      - "8000:8000"
+    environment:
+      OTEL_SERVICE_NAME: demo-api
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://vector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      REDIS_URL: redis://redis:6379
+      MYSQL_HOST: host.docker.internal
+      MYSQL_PORT: "3306"
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ""
+      MYSQL_DB: demoapp
+      HTTPBIN_URL: http://httpbin_container:80
+    depends_on:
+      redis:
+        condition: service_healthy
+      vector:
+        condition: service_started
+
+  test-app:
+    build:
+      context: .
+      dockerfile: test-app/Dockerfile
+    container_name: test-app
+    ports:
+      - "8001:8001"
+    environment:
+      OTEL_SERVICE_NAME: test-app
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://vector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      DEMO_API_URL: http://app:8000
+    depends_on:
+      vector:
+        condition: service_started
+      app:
+        condition: service_started
+
+  vector:
+    image: timberio/vector:0.55.0-debian
+    container_name: vector
+    command: ["--config", "/etc/vector/vector.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP (traces + logs)
+      - "8686:8686"   # Vector API
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+    depends_on:
+      victoria-logs:
+        condition: service_started
+      victoria-metrics:
+        condition: service_started
+      victoria-traces:
+        condition: service_started
+
+  victoria-logs:
+    image: victoriametrics/victoria-logs:v1.50.0
+    container_name: victoria-logs
+    ports:
+      - "9428:9428"
+    volumes:
+      - victoria-logs-data:/victoria-logs-data
+    command:
+      - "--storageDataPath=/victoria-logs-data"
+      - "--retentionPeriod=7d"
+
+  victoria-metrics:
+    image: victoriametrics/victoria-metrics:v1.108.1
+    container_name: victoria-metrics
+    ports:
+      - "8428:8428"
+    volumes:
+      - victoria-metrics-data:/storage
+    command:
+      - "--storageDataPath=/storage"
+      - "--retentionPeriod=7d"
+      - "--httpListenAddr=:8428"
+
+  victoria-traces:
+    image: victoriametrics/victoria-traces:latest
+    container_name: victoria-traces
+    ports:
+      - "10428:10428"
+    volumes:
+      - victoria-traces-data:/victoria-traces-data
+    command:
+      - "--storageDataPath=/victoria-traces-data"
+      - "--retentionPeriod=7d"
+
+  redis:
+    image: redis:7-alpine
+    container_name: demo-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  victoria-logs-data:
+  victoria-metrics-data:
+  victoria-traces-data:
