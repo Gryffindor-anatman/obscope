@@ -4,6 +4,11 @@
       "command": "/Users/cguo/code/empty/mcp_server/.venv/bin/python",
       "args": ["-m", "obs_mcp"],
       "cwd": "/Users/cguo/code/empty/mcp_server"
+    },
+    "database": {
+      "command": "/Users/cguo/code/empty/mcp_server_db/.venv/bin/python",
+      "args": ["-m", "db_mcp"],
+      "cwd": "/Users/cguo/code/empty/mcp_server_db"
     }
   }
 }

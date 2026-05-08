@@ -20,8 +20,9 @@ obs/                  Reusable OTel bootstrap package — `obs.init(app, ...)`
                       sets up traces+logs+metrics+instrumentors in one call
 vector/vector.yaml    Vector 0.55 config — single OTLP source, three OTLP sinks
 docker-compose.yml    6 services: app, test-app, vector, victoria-{logs,metrics,traces}
-mcp_server/           Python MCP server (stdio) → loaded via .mcp.json
-.mcp.json             Wires the MCP server into Claude Code (project scope)
+mcp_server/           Python MCP server (stdio) — observability tools → loaded via .mcp.json
+mcp_server_db/        Python MCP server (stdio) — MySQL + Redis tools → loaded via .mcp.json
+.mcp.json             Wires both MCP servers into Claude Code (project scope)
 docs/adr/             Architecture Decision Records — one file per non-obvious
                       tech choice (e.g. `0001-sqlalchemy-over-pymysql.md`).
                       Read these before assuming a stack choice was arbitrary.
@@ -136,9 +137,11 @@ Two demo-only HTTP endpoints exist to exercise these:
 
 `vector/vector.yaml` and the Victoria backends require zero changes.
 
-## MCP tools (8)
+## MCP tools (25 — 8 observability + 17 database)
 
-Loaded as `observability` MCP server. Three query backends + workflow helpers:
+### Observability (`observability` MCP server)
+
+Three query backends + workflow helpers:
 
 | Tool | Backend | Purpose |
 |---|---|---|
@@ -150,6 +153,38 @@ Loaded as `observability` MCP server. Three query backends + workflow helpers:
 | `list_services()` | VictoriaTraces | Discovery |
 | `restart_app(rebuild, timeout_s)` | docker | Restart, poll /health |
 | `run_workload(profile, requests, concurrency)` | http | Generate traffic; returns `[start, end]` window |
+
+### Database (`database` MCP server)
+
+MySQL (5 tools) + Redis (12 tools). Connects to local MySQL/Redis via env vars
+(defaults: `127.0.0.1:3306` / `127.0.0.1:6379`).
+
+**MySQL**
+
+| Tool | Purpose |
+|---|---|
+| `mysql_query(sql, params, limit)` | Run SELECT/SHOW/EXPLAIN/etc. Returns `{rows, row_count, elapsed_ms}`. For SELECT without trailing LIMIT, appends `LIMIT {limit}`; non-SELECT pass through unchanged. |
+| `mysql_execute(sql, params)` | Run INSERT/UPDATE/DELETE/ALTER. Returns `{affected_rows, lastrowid, elapsed_ms}`. |
+| `mysql_show_tables()` | List all tables in the database. |
+| `mysql_describe_table(table)` | DESCRIBE + SHOW CREATE TABLE for a table. |
+| `mysql_pool_status()` | Connection pool stats (size, free, used). |
+
+**Redis**
+
+| Tool | Purpose |
+|---|---|
+| `redis_get(key, max_items)` | Auto-detect type and return value (string/hash/list/set/zset). Max 100 items by default. |
+| `redis_hget(key, field)` | Get a single hash field. |
+| `redis_set(key, value, ttl)` | Set a string key. |
+| `redis_hset(key, field, value)` | Set a hash field. |
+| `redis_keys(pattern, limit)` | SCAN keys matching glob pattern. |
+| `redis_delete(keys)` | Delete one or more keys. |
+| `redis_exists(keys)` | Check key existence count. |
+| `redis_ttl(key)` | Get key TTL in seconds. |
+| `redis_type(key)` | Get key data type. |
+| `redis_info(section)` | Redis INFO. Defaults to "server". |
+| `redis_lrange(key, start, stop)` | Get list range (default: first 100). |
+| `redis_smembers(key, max_items)` | Get set members. SSCAN for large sets. |
 
 ## Standard closed-loop workflow
 

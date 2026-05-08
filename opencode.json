@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "database": {
+      "type": "local",
+      "command": ["/Users/cguo/code/empty/mcp_server_db/.venv/bin/python", "-m", "db_mcp"],
+      "environment": {
+        "PYTHONPATH": "/Users/cguo/code/empty/mcp_server_db"
+      },
+      "enabled": true
+    }
+  }
+}
