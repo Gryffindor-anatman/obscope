@@ -9,9 +9,13 @@ query APIs to Claude Code as tools.
 ## Layout
 
 ```
-app/                  FastAPI demo service (the "APP" being observed)
+app/                  FastAPI demo service (the "APP" being observed) —
+                      layered: controllers/ services/ repositories/
+                      schemas/ infra/ + main.py config.py metrics.py
+                      background.py. See "app/ layout" below.
 test-app/             Second FastAPI service — calls demo-api/work to demo
-                      cross-service trace propagation (W3C traceparent)
+                      cross-service trace propagation (W3C traceparent).
+                      Single-file template; not layered like app/.
 obs/                  Reusable OTel bootstrap package — `obs.init(app, ...)`
                       sets up traces+logs+metrics+instrumentors in one call
 vector/vector.yaml    Vector 0.55 config — single OTLP source, three OTLP sinks
@@ -22,6 +26,39 @@ docs/adr/             Architecture Decision Records — one file per non-obvious
                       tech choice (e.g. `0001-sqlalchemy-over-pymysql.md`).
                       Read these before assuming a stack choice was arbitrary.
 ```
+
+## app/ layout
+
+Layered for navigability — adding a new endpoint is "edit one file per
+layer", not "find the right place in a 500-line module".
+
+| Layer | Folder | Owns |
+|---|---|---|
+| Entry | `main.py` | FastAPI app, `obs.init`, lifespan, `include_router` |
+| Config | `config.py` | env-var `Settings` singleton |
+| Shared metrics | `metrics.py` | `meter` + generic counters/histograms used across layers |
+| Background | `background.py` | long-running asyncio tasks (redis heartbeat) |
+| Controller | `controllers/` | request/response shape, HTTP status mapping. **No business logic.** |
+| Service | `services/` | business logic, tracing spans, INFO/ERROR logging, custom metric increments |
+| Repository | `repositories/` | parameterised SQL only — no spans, no logs (SQLAlchemy auto-instrumentor handles those) |
+| Schema | `schemas/` | pydantic request/response DTOs |
+| Infra | `infra/` | engines/clients (`db.py`, `redis.py`, `httpbin.py`); `db.py` also registers pool/statement metrics |
+
+Conventions:
+- Controllers may **not** import `infra/` directly — go through a service.
+  (Exception: `infra.db.pool_status` for `/debug/pool` since it's pure
+  introspection, no business meaning.)
+- Services raise raw exceptions; controllers translate to `HTTPException`.
+- The `app_requests_total` / `app_request_duration_ms` counters live in
+  controllers (per-endpoint observability). Backend-specific counters
+  (`redis_ops_total`, `httpbin_requests_total`) live in services.
+- Module-level loggers use `logging.getLogger(__name__)` — that's why
+  log `scope.name` now resolves to e.g. `services.redis_service`,
+  giving free per-module filtering in VictoriaLogs.
+
+`test-app/` deliberately stays single-file as the **minimal** template.
+Use `app/` as the template when copy-pasting a service that talks to
+multiple backends.
 
 ## What flows where
 

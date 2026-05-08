@@ -9,7 +9,7 @@ RUN pip install --no-cache-dir /tmp/obs && rm -rf /tmp/obs
 COPY app/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app/main.py .
+COPY app/ .
 
 EXPOSE 8000
 
