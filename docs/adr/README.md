@@ -19,6 +19,26 @@ What did we choose? State it plainly.
 What gets easier, what gets harder, what new traps appear.
 ```
 
+## When to write one (and when not to)
+
+Write an ADR when the change introduces a **decision with rejected
+alternatives** — the rationale won't survive in `git log` or in the code
+itself. Examples that earn an ADR: picking one library over another with
+similar surface, defining a discipline ("controllers may not import
+infra"), or codifying a principle ("visibility over resilience"). If a
+future reader could ask "why this and not X?" and the answer isn't
+obvious, write the ADR.
+
+**Skip the ADR** for: bug fixes, dependency version bumps, mechanical
+refactors with one obvious shape, adding an endpoint that follows an
+existing pattern, doc edits, formatting. The commit message is enough.
+ADRs derive their value from being rare; writing one per commit
+dilutes the signal until "check the ADRs" stops being a habit.
+
+Rough heuristic: across the project's lifetime, expect roughly one ADR
+per ~10–30 commits, clustered around architectural inflection points,
+not spread evenly.
+
 ## Rules
 
 - Filenames: `NNNN-short-slug.md` (zero-padded 4 digits, kebab-case slug).
