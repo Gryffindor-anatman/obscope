@@ -35,3 +35,4 @@ What gets easier, what gets harder, what new traps appear.
 
 - [0001 — SQLAlchemy over raw pymysql](0001-sqlalchemy-over-pymysql.md)
 - [0002 — Visibility over resilience in the demo app](0002-visibility-over-resilience-in-demo-app.md)
+- [0003 — Layered structure for `app/`](0003-layered-structure-for-app.md)
