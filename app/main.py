@@ -4,13 +4,17 @@ import os
 import random
 import time
 from contextlib import asynccontextmanager
+from urllib.parse import quote_plus
 
 import httpx
-import pymysql
 import redis
 from fastapi import Body, FastAPI, HTTPException
 from opentelemetry import metrics, trace
+from opentelemetry.metrics import Observation
 from opentelemetry.trace import Status, StatusCode
+from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Engine
 
 import obs
 
@@ -37,39 +41,107 @@ def get_redis() -> redis.Redis:
     return _redis_pool
 
 
-def _get_mysql_conn():
-    return pymysql.connect(
-        host=MYSQL_HOST, port=MYSQL_PORT, user=MYSQL_USER,
-        password=MYSQL_PASSWORD, database=MYSQL_DB,
-        charset="utf8mb4", connect_timeout=3,
+_engine: "Engine | None" = None
+
+
+def get_engine() -> Engine:
+    global _engine
+    if _engine is None:
+        url = (
+            f"mysql+pymysql://{MYSQL_USER}:{quote_plus(MYSQL_PASSWORD)}"
+            f"@{MYSQL_HOST}:{MYSQL_PORT}/{MYSQL_DB}?charset=utf8mb4"
+        )
+        _engine = create_engine(
+            url, pool_pre_ping=True, pool_size=5, max_overflow=5,
+            connect_args={"connect_timeout": 3},
+        )
+        SQLAlchemyInstrumentor().instrument(engine=_engine)
+        _register_pool_metrics(_engine)
+        _register_statement_metrics(_engine)
+    return _engine
+
+
+def _register_pool_metrics(engine: Engine) -> None:
+    pool = engine.pool
+    meter.create_observable_gauge(
+        name="db_pool_connections",
+        description="SQLAlchemy connection pool state by status",
+        callbacks=[lambda _: [
+            Observation(pool.checkedin(), {"state": "idle"}),
+            Observation(pool.checkedout(), {"state": "in_use"}),
+            Observation(max(0, pool.overflow()), {"state": "overflow"}),
+        ]],
     )
+
+
+def _normalize_sql(s: str) -> str:
+    return " ".join(s.split())[:200]
+
+
+def _extract_op(s: str) -> str:
+    parts = s.lstrip().split()
+    return parts[0].upper() if parts else "UNKNOWN"
+
+
+def _register_statement_metrics(engine: Engine) -> None:
+    duration = meter.create_histogram(
+        name="db_statement_duration_ms",
+        description="SQL statement execution time",
+        unit="ms",
+    )
+    errors = meter.create_counter(
+        name="db_statement_errors_total",
+        description="SQL statement execution failures",
+    )
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def _start(conn, cursor, stmt, params, context, executemany):
+        context._t0 = time.perf_counter()
+
+    @event.listens_for(engine, "after_cursor_execute")
+    def _end(conn, cursor, stmt, params, context, executemany):
+        dt_ms = (time.perf_counter() - context._t0) * 1000
+        duration.record(dt_ms, {
+            "statement": _normalize_sql(stmt),
+            "operation": _extract_op(stmt),
+        })
+
+    @event.listens_for(engine, "handle_error")
+    def _err(exc_ctx):
+        stmt = exc_ctx.statement or ""
+        errors.add(1, {
+            "statement": _normalize_sql(stmt),
+            "operation": _extract_op(stmt),
+            "exception_type": type(exc_ctx.original_exception).__name__,
+        })
 
 
 def init_mysql_schema() -> None:
-    conn = pymysql.connect(
-        host=MYSQL_HOST, port=MYSQL_PORT, user=MYSQL_USER,
-        password=MYSQL_PASSWORD, charset="utf8mb4",
+    bootstrap_url = (
+        f"mysql+pymysql://{MYSQL_USER}:{quote_plus(MYSQL_PASSWORD)}"
+        f"@{MYSQL_HOST}:{MYSQL_PORT}/?charset=utf8mb4"
     )
-    with conn.cursor() as cur:
-        cur.execute("CREATE DATABASE IF NOT EXISTS demoapp CHARACTER SET utf8mb4")
-        cur.execute("USE demoapp")
-        cur.execute("""
+    bootstrap = create_engine(bootstrap_url, connect_args={"connect_timeout": 3})
+    with bootstrap.begin() as conn:
+        conn.execute(text(f"CREATE DATABASE IF NOT EXISTS {MYSQL_DB} CHARACTER SET utf8mb4"))
+    bootstrap.dispose()
+    with get_engine().begin() as conn:
+        conn.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(100) NOT NULL,
                 email VARCHAR(200) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        """)
-    conn.commit()
-    conn.close()
+        """))
 
 
 def _query_users():
-    conn = _get_mysql_conn()
-    with conn.cursor() as cur:
-        cur.execute("SELECT id, name, email, created_at FROM users")
-        return [dict(zip(["id", "name", "email", "created_at"], r)) for r in cur.fetchall()]
+    with get_engine().connect() as conn:
+        rows = conn.execute(
+            text("SELECT id, name, email, created_at FROM users")
+        ).mappings().all()
+        return [dict(r) for r in rows]
 
 
 logger = logging.getLogger("app")
@@ -112,7 +184,6 @@ meter = metrics.get_meter(SERVICE_NAME)
 request_counter = meter.create_counter("app_requests_total")
 request_duration = meter.create_histogram("app_request_duration_ms")
 redis_ops_total = meter.create_counter("redis_ops_total")
-mysql_ops_total = meter.create_counter("mysql_ops_total")
 httpbin_requests_total = meter.create_counter("httpbin_requests_total")
 
 tracer = trace.get_tracer(SERVICE_NAME)
@@ -255,45 +326,57 @@ async def redis_keys(pattern: str = "*"):
 @app.get("/mysql/ping")
 async def mysql_ping():
     request_counter.add(1, {"endpoint": "/mysql/ping"})
-    mysql_ops_total.add(1, {"operation": "ping"})
-    with tracer.start_as_current_span("mysql_ping") as span:
-        span.set_attribute("db.system", "mysql")
-        span.set_attribute("db.operation", "PING")
-        try:
-            def _ping():
-                conn = _get_mysql_conn()
-                with conn.cursor() as cur:
-                    cur.execute("SELECT 1")
-                return True
-            ok = await asyncio.to_thread(_ping)
-            span.set_attribute("db.mysql.success", ok)
-            logger.info("mysql PING ok=%s", ok)
-            return {"ok": ok}
-        except Exception as e:
-            span.set_status(Status(StatusCode.ERROR, str(e)))
-            span.record_exception(e)
-            logger.error("mysql PING failed: %s", e)
-            raise HTTPException(status_code=503, detail=f"mysql unavailable: {e}")
+    try:
+        def _ping():
+            with get_engine().connect() as conn:
+                conn.execute(text("SELECT 1"))
+            return True
+        ok = await asyncio.to_thread(_ping)
+        logger.info("mysql PING ok=%s", ok)
+        return {"ok": ok}
+    except Exception as e:
+        logger.error("mysql PING failed: %s", e)
+        raise HTTPException(status_code=503, detail=f"mysql unavailable: {e}")
 
 
 @app.get("/mysql/users")
 async def mysql_users():
     request_counter.add(1, {"endpoint": "/mysql/users"})
-    mysql_ops_total.add(1, {"operation": "select"})
-    with tracer.start_as_current_span("mysql_select") as span:
-        span.set_attribute("db.system", "mysql")
-        span.set_attribute("db.operation", "SELECT")
-        span.set_attribute("db.sql.table", "users")
-        try:
-            rows = await asyncio.to_thread(_query_users)
-            span.set_attribute("db.rows_returned", len(rows))
-            logger.info("mysql SELECT users count=%d", len(rows))
-            return rows
-        except Exception as e:
-            span.set_status(Status(StatusCode.ERROR, str(e)))
-            span.record_exception(e)
-            logger.error("mysql SELECT users failed: %s", e)
-            raise HTTPException(status_code=503, detail=f"mysql unavailable: {e}")
+    try:
+        rows = await asyncio.to_thread(_query_users)
+        logger.info("mysql SELECT users count=%d", len(rows))
+        return rows
+    except Exception as e:
+        logger.error("mysql SELECT users failed: %s", e)
+        raise HTTPException(status_code=503, detail=f"mysql unavailable: {e}")
+
+
+@app.get("/debug/pool")
+async def debug_pool():
+    p = get_engine().pool
+    return {
+        "status": p.status(),
+        "checkedin": p.checkedin(),
+        "checkedout": p.checkedout(),
+        "size": p.size(),
+        "overflow": p.overflow(),
+    }
+
+
+@app.get("/mysql/slow")
+async def mysql_slow(seconds: int = 3):
+    request_counter.add(1, {"endpoint": "/mysql/slow"})
+    try:
+        def _sleep():
+            with get_engine().connect() as conn:
+                conn.execute(text("SELECT SLEEP(:s)"), {"s": seconds})
+            return True
+        ok = await asyncio.to_thread(_sleep)
+        logger.info("mysql SLEEP done seconds=%d", seconds)
+        return {"ok": ok, "seconds": seconds}
+    except Exception as e:
+        logger.error("mysql SLEEP failed: %s", e)
+        raise HTTPException(status_code=503, detail=f"mysql unavailable: {e}")
 
 
 @app.post("/mysql/users")
@@ -301,30 +384,20 @@ async def mysql_create_user(payload: dict = Body(...)):
     name = payload.get("name", "")
     email = payload.get("email", "")
     request_counter.add(1, {"endpoint": "/mysql/users"})
-    mysql_ops_total.add(1, {"operation": "insert"})
-    with tracer.start_as_current_span("mysql_insert") as span:
-        span.set_attribute("db.system", "mysql")
-        span.set_attribute("db.operation", "INSERT")
-        span.set_attribute("db.sql.table", "users")
-        try:
-            def _insert():
-                conn = _get_mysql_conn()
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "INSERT INTO users (name, email) VALUES (%s, %s)",
-                        (name, email),
-                    )
-                    conn.commit()
-                    return cur.lastrowid
-            row_id = await asyncio.to_thread(_insert)
-            span.set_attribute("db.last_insert_id", row_id)
-            logger.info("mysql INSERT user id=%d name=%s", row_id, name)
-            return {"id": row_id, "name": name, "email": email}
-        except Exception as e:
-            span.set_status(Status(StatusCode.ERROR, str(e)))
-            span.record_exception(e)
-            logger.error("mysql INSERT failed: %s", e)
-            raise HTTPException(status_code=503, detail=f"mysql unavailable: {e}")
+    try:
+        def _insert():
+            with get_engine().begin() as conn:
+                result = conn.execute(
+                    text("INSERT INTO users (name, email) VALUES (:name, :email)"),
+                    {"name": name, "email": email},
+                )
+                return result.lastrowid
+        row_id = await asyncio.to_thread(_insert)
+        logger.info("mysql INSERT user id=%d name=%s", row_id, name)
+        return {"id": row_id, "name": name, "email": email}
+    except Exception as e:
+        logger.error("mysql INSERT failed: %s", e)
+        raise HTTPException(status_code=503, detail=f"mysql unavailable: {e}")
 
 
 # -- httpbin proxy endpoints --
@@ -381,17 +454,11 @@ async def all_services():
                 result["redis"] = {"ok": False, "error": str(e)}
 
         # --- MySQL ---
-        with tracer.start_as_current_span("mysql_op") as mysql_span:
-            mysql_span.set_attribute("db.system", "mysql")
-            mysql_span.set_attribute("db.operation", "SELECT")
-            try:
-                rows = await asyncio.to_thread(_query_users)
-                mysql_ops_total.add(1, {"operation": "select"})
-                mysql_span.set_attribute("db.rows_returned", len(rows))
-                result["mysql"] = {"ok": True, "user_count": len(rows)}
-            except Exception as e:
-                mysql_span.set_status(Status(StatusCode.ERROR, str(e)))
-                result["mysql"] = {"ok": False, "error": str(e)}
+        try:
+            rows = await asyncio.to_thread(_query_users)
+            result["mysql"] = {"ok": True, "user_count": len(rows)}
+        except Exception as e:
+            result["mysql"] = {"ok": False, "error": str(e)}
 
         # --- httpbin ---
         with tracer.start_as_current_span("httpbin_op") as httpbin_span:

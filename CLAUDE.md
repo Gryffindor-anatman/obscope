@@ -18,6 +18,9 @@ vector/vector.yaml    Vector 0.55 config — single OTLP source, three OTLP sink
 docker-compose.yml    6 services: app, test-app, vector, victoria-{logs,metrics,traces}
 mcp_server/           Python MCP server (stdio) → loaded via .mcp.json
 .mcp.json             Wires the MCP server into Claude Code (project scope)
+docs/adr/             Architecture Decision Records — one file per non-obvious
+                      tech choice (e.g. `0001-sqlalchemy-over-pymysql.md`).
+                      Read these before assuming a stack choice was arbitrary.
 ```
 
 ## What flows where
@@ -38,6 +41,52 @@ OpenTelemetry's `LoggingHandler` (configured by `obs.init`) auto-injects
 key**. Trace context propagates across services via the W3C `traceparent`
 header injected by `HTTPXClientInstrumentor`, so a request from test-app to
 demo-api shares one trace_id.
+
+## App-emitted custom metrics
+
+Beyond what auto-instrumentors emit, `app/main.py` publishes:
+
+| Metric | Type | Labels | Source |
+|---|---|---|---|
+| `app_requests_total` | counter | `endpoint` | manual `.add()` per route |
+| `app_request_duration_ms` | histogram | `endpoint` | manual `.record()` |
+| `redis_ops_total` | counter | `operation` | manual |
+| `httpbin_requests_total` | counter | `endpoint` | manual |
+| `db_pool_connections` | observable gauge | `state` (idle/in_use/overflow) | `pool.checkedin/out/overflow()` callback |
+| `db_statement_duration_ms` | histogram | `statement`, `operation` | SQLAlchemy `before/after_cursor_execute` events |
+| `db_statement_errors_total` | counter | `statement`, `operation`, `exception_type` | SQLAlchemy `handle_error` event |
+
+The `db_statement_*` pair is the **SQL spanmetrics** layer — same shape as
+OTel Collector's `spanmetricsconnector` would derive from spans, but emitted
+in-app for cheap retention. SQL is parameterised by SQLAlchemy
+(`%(name)s`), so cardinality of `statement` is bounded by the number of
+distinct SQL templates in code (~10), not by parameter values. The
+`statement` label is whitespace-collapsed and truncated at 200 chars
+defensively. See `_register_statement_metrics` in `app/main.py`.
+
+Canonical PromQL for SQL insights:
+
+```promql
+# Most-executed SQL
+topk(5, sum by (statement) (db_statement_duration_ms_count))
+
+# Highest total DB time (the "fix this first" list)
+topk(5, sum by (statement) (db_statement_duration_ms_sum))
+
+# Slowest p95 (use rate version once data has ≥2 samples)
+topk(5, histogram_quantile(0.95,
+    sum by (statement, le) (rate(db_statement_duration_ms_bucket[5m]))))
+
+# Pool state (instant)
+db_pool_connections
+```
+
+Two demo-only HTTP endpoints exist to exercise these:
+- `GET /debug/pool` — returns the live `pool.status()`. Use to ground-truth
+  the `db_pool_connections` gauge against in-process state.
+- `GET /mysql/slow?seconds=N` — runs `SELECT SLEEP(N)`, holding a
+  connection across an OTLP export tick. Run several in parallel to make
+  `db_pool_connections{state="in_use"}` visibly rise in vmui.
 
 ## Adding a new app
 
@@ -79,8 +128,10 @@ each one disambiguates a different failure mode.
 
 3. **Patch** — `Edit` / `Write` files in `app/` (or wherever).
 
-4. **Restart** — `restart_app(rebuild=True)` if you changed `requirements.txt`
-   or `Dockerfile`; otherwise `restart_app(rebuild=False)` is ~1s.
+4. **Restart** — `restart_app(rebuild=True)` for **any** edit under `app/`
+   (the container has no bind mount, so code is baked in at build time).
+   `restart_app(rebuild=False)` only restarts the existing image — useful
+   for picking up env-var changes in `docker-compose.yml`, nothing else.
 
 5. **Re-run workload** — `run_workload(profile=..., requests=...)`.
    Capture the returned `started_at` / `ended_at`.
@@ -106,9 +157,18 @@ each one disambiguates a different failure mode.
 
 ## Anti-patterns to avoid
 
-- **Docker Hub is blocked** — all `docker compose up --build -d` commands must be
-  prefixed with `proxy` to route through the proxy, e.g. `proxy docker compose up --build -d`.
-  Otherwise image pulls will time out.
+- **Docker Hub is blocked without proxy** — Docker Desktop's GUI proxy at
+  `127.0.0.1:7897` doesn't work because that's the VM's loopback, and
+  `host.docker.internal` doesn't resolve from buildkit's sandbox. Until the
+  Mac's LAN IP is wired into Docker Desktop, builds must be done from a shell
+  with proxy env vars exported, e.g.:
+  ```
+  export http_proxy=http://127.0.0.1:7897 https_proxy=http://127.0.0.1:7897 \
+         HTTP_PROXY=http://127.0.0.1:7897 HTTPS_PROXY=http://127.0.0.1:7897
+  docker compose up --build -d app
+  ```
+  MCP `restart_app(rebuild=True)` will fail in this state because it shells out
+  to `docker compose` without the env. Use the shell command instead.
 
 - **Don't restart for changes that don't need it.** Editing `vector/vector.yaml`
   needs `docker compose restart vector`, not `restart_app`. Editing
@@ -119,3 +179,12 @@ each one disambiguates a different failure mode.
   the span hasn't been ingested yet (BatchSpanProcessor flush delay ~5s).
 - **Don't generate traffic with raw `curl` in a loop** when `run_workload`
   exists — you lose the structured `[start, end]` window for verification.
+
+- **`restart_app(rebuild=False)` does NOT pick up `app/*.py` edits.** There
+  is no bind mount on the `app` service in `docker-compose.yml` — code is
+  `COPY`-ed into the image at build time. After editing any file under
+  `app/`, use `restart_app(rebuild=True)`. Symptom of getting this wrong:
+  the new behaviour silently doesn't appear, no error, the old container
+  just keeps running the old code. If iteration speed matters, add a
+  `volumes: - ./app:/app` mount to the service and remember to
+  `--reload` uvicorn — but neither is set up today.
