@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 
+from auth_token import check_token
 from metrics import request_counter
 from services import httpbin_service
 
@@ -7,7 +8,8 @@ router = APIRouter(prefix="/proxy/httpbin")
 
 
 @router.get("/get")
-async def proxy_httpbin_get():
+@check_token
+async def proxy_httpbin_get(request: Request):
     request_counter.add(1, {"endpoint": "/proxy/httpbin/get"})
     try:
         return await httpbin_service.proxy_get()
@@ -16,7 +18,8 @@ async def proxy_httpbin_get():
 
 
 @router.post("/post")
-async def proxy_httpbin_post(payload: dict = Body(None)):
+@check_token
+async def proxy_httpbin_post(request: Request, payload: dict = Body(None)):
     request_counter.add(1, {"endpoint": "/proxy/httpbin/post"})
     try:
         return await httpbin_service.proxy_post(payload)
