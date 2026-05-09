@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from auth_token import check_token
 from infra.db import pool_status
 from metrics import request_counter
 from schemas.user import CreateUserRequest
@@ -9,7 +10,8 @@ router = APIRouter()
 
 
 @router.get("/mysql/ping")
-async def mysql_ping():
+@check_token
+async def mysql_ping(request: Request):
     request_counter.add(1, {"endpoint": "/mysql/ping"})
     try:
         ok = await user_service.ping()
@@ -19,7 +21,8 @@ async def mysql_ping():
 
 
 @router.get("/mysql/users")
-async def mysql_users():
+@check_token
+async def mysql_users(request: Request):
     request_counter.add(1, {"endpoint": "/mysql/users"})
     try:
         return await user_service.list_users()
@@ -28,7 +31,8 @@ async def mysql_users():
 
 
 @router.get("/mysql/slow")
-async def mysql_slow(seconds: int = 3):
+@check_token
+async def mysql_slow(request: Request, seconds: int = 3):
     request_counter.add(1, {"endpoint": "/mysql/slow"})
     try:
         ok = await user_service.slow_query(seconds)
@@ -38,7 +42,8 @@ async def mysql_slow(seconds: int = 3):
 
 
 @router.post("/mysql/users")
-async def mysql_create_user(payload: CreateUserRequest):
+@check_token
+async def mysql_create_user(request: Request, payload: CreateUserRequest):
     request_counter.add(1, {"endpoint": "/mysql/users"})
     try:
         return await user_service.create_user(payload.name, payload.email)

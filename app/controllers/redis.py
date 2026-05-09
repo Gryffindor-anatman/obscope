@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
+from auth_token import check_token
 from metrics import request_counter
 from schemas.redis import SetRequest
 from services import redis_service
@@ -8,7 +9,8 @@ router = APIRouter(prefix="/redis")
 
 
 @router.get("/ping")
-async def redis_ping():
+@check_token
+async def redis_ping(request: Request):
     request_counter.add(1, {"endpoint": "/redis/ping"})
     try:
         ok = redis_service.ping()
@@ -18,7 +20,8 @@ async def redis_ping():
 
 
 @router.get("/get")
-async def redis_get(key: str):
+@check_token
+async def redis_get(request: Request, key: str):
     request_counter.add(1, {"endpoint": "/redis/get"})
     try:
         val = redis_service.get(key)
@@ -30,7 +33,8 @@ async def redis_get(key: str):
 
 
 @router.post("/set")
-async def redis_set(payload: SetRequest):
+@check_token
+async def redis_set(request: Request, payload: SetRequest):
     request_counter.add(1, {"endpoint": "/redis/set"})
     try:
         ok = redis_service.set(payload.key, payload.value)
@@ -40,7 +44,8 @@ async def redis_set(payload: SetRequest):
 
 
 @router.get("/keys")
-async def redis_keys(pattern: str = "*"):
+@check_token
+async def redis_keys(request: Request, pattern: str = "*"):
     request_counter.add(1, {"endpoint": "/redis/keys"})
     try:
         result = redis_service.keys(pattern)

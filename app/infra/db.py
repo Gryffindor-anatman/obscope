@@ -104,6 +104,22 @@ def init_schema() -> None:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_credentials (
+                app_id      VARCHAR(64)  PRIMARY KEY,
+                app_key     VARCHAR(128) NOT NULL UNIQUE,
+                app_secret  VARCHAR(256) NOT NULL,
+                description VARCHAR(512) NOT NULL DEFAULT '',
+                is_active   BOOLEAN      NOT NULL DEFAULT TRUE,
+                created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        conn.execute(text("""
+            INSERT IGNORE INTO app_credentials
+                (app_id, app_key, app_secret, description, is_active)
+            VALUES
+                ('demo', 'demo-key', 'demo-secret', 'Demo credential', TRUE)
+        """))
 
 
 def ping() -> bool:
