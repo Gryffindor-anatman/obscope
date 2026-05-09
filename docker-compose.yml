@@ -1,9 +1,9 @@
 services:
-  app:
+  app1:
     build:
       context: .
-      dockerfile: app/Dockerfile
-    container_name: demo-app
+      dockerfile: demo-app/app1/Dockerfile
+    container_name: demo-app1
     ports:
       - "8000:8000"
     environment:
@@ -23,23 +23,23 @@ services:
       vector:
         condition: service_started
 
-  test-app:
-    build:
-      context: .
-      dockerfile: test-app/Dockerfile
-    container_name: test-app
-    ports:
-      - "8001:8001"
-    environment:
-      OTEL_SERVICE_NAME: test-app
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://vector:4318
-      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
-      DEMO_API_URL: http://app:8000
-    depends_on:
-      vector:
-        condition: service_started
-      app:
-        condition: service_started
+  # test-app:
+  #   build:
+  #     context: .
+  #     dockerfile: test-app/Dockerfile
+  #   container_name: test-app
+  #   ports:
+  #     - "8001:8001"
+  #   environment:
+  #     OTEL_SERVICE_NAME: test-app
+  #     OTEL_EXPORTER_OTLP_ENDPOINT: http://vector:4318
+  #     OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+  #     DEMO_API_URL: http://app1:8000
+  #   depends_on:
+  #     vector:
+  #       condition: service_started
+  #     app1:
+  #       condition: service_started
 
   vector:
     image: timberio/vector:0.55.0-debian
