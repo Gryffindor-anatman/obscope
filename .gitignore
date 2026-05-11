@@ -21,6 +21,10 @@ build/
 .claude/settings.local.json
 .playwright-mcp/
 demo-app/
+demo-app.bak/
+
+# pypiserver-hosted package storage (data, not source)
+pypi-packages/
 
 # Logs
 *.log

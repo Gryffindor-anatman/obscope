@@ -16,7 +16,6 @@ VLOGS_URL = os.getenv("VLOGS_URL", "http://localhost:9428")
 VMETRICS_URL = os.getenv("VMETRICS_URL", "http://localhost:8428")
 VTRACES_URL = os.getenv("VTRACES_URL", "http://localhost:10428")
 APP_URL = os.getenv("APP_URL", "http://localhost:8000")
-COMPOSE_DIR = os.getenv("COMPOSE_DIR", "/Users/cguo/code/empty")
 
 mcp = FastMCP("observability")
 # Targets are all on localhost — opt out of env-based proxy detection.
@@ -190,53 +189,7 @@ async def list_services() -> list[str]:
     return r.json().get("data", [])
 
 
-# ─── Loop closure: change → restart → workload → observe ──────────────────
-
-@mcp.tool()
-async def restart_app(rebuild: bool = False, timeout_s: int = 30) -> dict[str, Any]:
-    """Restart the demo-app container, then poll /health until it responds 200.
-
-    Use this after editing files in app/ to make changes take effect.
-
-    - rebuild=False: just restart the existing container (~2s)
-    - rebuild=True: `docker compose up --build -d app` to rebuild image (~10-30s)
-
-    Returns timing and the final health status. Raises if /health doesn't come
-    back within timeout_s seconds.
-    """
-    started = time.time()
-    if rebuild:
-        cmd = ["docker", "compose", "up", "--build", "-d", "app"]
-    else:
-        cmd = ["docker", "compose", "restart", "app"]
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        cwd=COMPOSE_DIR,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"docker compose failed: {stderr.decode()[:500]}")
-
-    deadline = time.time() + timeout_s
-    last_err = ""
-    while time.time() < deadline:
-        try:
-            r = await client.get(f"{APP_URL}/health", timeout=2.0)
-            if r.status_code == 200:
-                return {
-                    "ok": True,
-                    "rebuilt": rebuild,
-                    "restart_seconds": round(time.time() - started, 2),
-                    "ready_at": time.time(),
-                }
-        except Exception as e:
-            last_err = str(e)
-        await asyncio.sleep(0.5)
-    raise RuntimeError(f"app /health did not return 200 within {timeout_s}s; last error: {last_err}")
-
+# ─── Workload generation ──────────────────────────────────────────────────
 
 @mcp.tool()
 async def run_workload(

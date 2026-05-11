@@ -1,27 +1,7 @@
 services:
-  app1:
-    build:
-      context: .
-      dockerfile: demo-app/app1/Dockerfile
-    container_name: demo-app1
-    ports:
-      - "8000:8000"
-    environment:
-      OTEL_SERVICE_NAME: demo-api
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://vector:4318
-      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
-      REDIS_URL: redis://redis:6379
-      MYSQL_HOST: host.docker.internal
-      MYSQL_PORT: "3306"
-      MYSQL_USER: root
-      MYSQL_PASSWORD: ""
-      MYSQL_DB: demoapp
-      HTTPBIN_URL: http://httpbin_container:80
-    depends_on:
-      redis:
-        condition: service_healthy
-      vector:
-        condition: service_started
+  # Demo apps (app1 / app2) live in their own repos and connect via
+  # host.docker.internal — see /Users/cguo/code/app1 and /Users/cguo/code/app2.
+  # This compose file is now infra-only (vector, victoria-*, redis, pypi).
 
   # test-app:
   #   build:
@@ -103,6 +83,15 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
+  pypi:
+    image: pypiserver/pypiserver:latest
+    container_name: pypi
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./pypi-packages:/data/packages
+    command: run -P . -a . /data/packages
 
 volumes:
   victoria-logs-data:
